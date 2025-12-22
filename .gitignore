@@ -1,0 +1,27 @@
+# =======================================
+# GLOBAL NODE.JS IGNORES
+# (Ignora cualquier carpeta node_modules en el repo)
+# =======================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Ignorar archivos de entorno globales
+.env
+.env.*
+
+
+# =======================================
+# BACKEND NODE.JS (api/)
+# =======================================
+api/node_modules/
+api/.env
+api/npm-debug.log*
+api/dist/
+api/build/
+
+# =======================================
+# OS Files (Mac)
+# =======================================
+.DS_Store
