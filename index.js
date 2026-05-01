@@ -3,7 +3,7 @@ const cors = require('cors');
 const path = require("path");
 
 const app = express();
-const PORT = 4001; // microservicio separado del principal
+const PORT = 4009; // microservicio separado del principal
 
 // ===============================
 // MIDDLEWARES

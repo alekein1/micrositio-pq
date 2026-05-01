@@ -1,17 +1,16 @@
 const { chromium } = require('playwright');
 
-let browser;
+const launchOptions = {
+  headless: true,
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage'
+  ]
+};
 
 exports.getBrowser = async () => {
-  if (!browser) {
-    browser = await chromium.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage'
-      ]
-    });
-  }
-  return browser;
+  // Cada solicitud recibe su propio navegador para evitar
+  // reutilizar instancias ya cerradas entre consultas consecutivas.
+  return chromium.launch(launchOptions);
 };

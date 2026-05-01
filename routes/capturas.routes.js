@@ -5,5 +5,6 @@ const capturasController = require('../controllers/capturas.controller');
 
 router.post('/iniciar', capturasController.iniciarCapturas);
 router.post("/iniciar-sync", capturasController.iniciarCapturasSync);
+router.post('/unificado', capturasController.iniciarCapturasUnificadas);
 
 module.exports = router;

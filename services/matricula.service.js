@@ -1,7 +1,169 @@
 const path = require('path');
-const fs = require('fs');
+const { ensureScreenshotDir } = require('../utils/capturas.util');
 
-module.exports = async ({ browser, placa, site, id_orden }) => {
+const normalizeText = (value = '') => value.replace(/\s+/g, ' ').trim();
+
+const getResultCard = (page) =>
+  page.locator('div.card.my-4').filter({
+    has: page.locator('h2', { hasText: 'Consulta valores a pagar por placa o chasis' })
+  }).first();
+
+const expandirDetalleValores = async (page) => {
+  const detalleButton = page.locator('button').filter({
+    hasText: /detalle valores/i
+  }).first();
+
+  if (await detalleButton.count()) {
+    const buttonText = normalizeText(await detalleButton.textContent());
+
+    if (/ver detalle valores/i.test(buttonText)) {
+      await detalleButton.click();
+      await page.waitForTimeout(1200);
+    }
+  }
+
+  await page.waitForSelector('h2:has-text("Detalle de valores a pagar")', {
+    timeout: 10000
+  }).catch(() => null);
+};
+
+const ocultarOverlaysParaCaptura = async (page) => {
+  await page.evaluate(() => {
+    const hideElement = (element) => {
+      element.style.setProperty('display', 'none', 'important');
+      element.style.setProperty('visibility', 'hidden', 'important');
+      element.style.setProperty('opacity', '0', 'important');
+    };
+
+    document.querySelectorAll('iframe, ins, .adsbygoogle').forEach(hideElement);
+
+    [...document.querySelectorAll('body *')].forEach((element) => {
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      const fingerprint = `${element.id || ''} ${element.className || ''} ${element.innerText || ''}`
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      const isFloating =
+        ['fixed', 'sticky'].includes(style.position) &&
+        rect.height >= 50 &&
+        rect.bottom >= (window.innerHeight * 0.65);
+
+      const isAdLike =
+        /(ads|advert|banner|google|taboola|outbrain|remington|ver más)/i.test(fingerprint) &&
+        rect.height >= 40;
+
+      if (isFloating || isAdLike) {
+        hideElement(element);
+      }
+    });
+  });
+};
+
+const extraerDatosMatricula = async (page, placa) => {
+  const resultCard = getResultCard(page);
+  await resultCard.waitFor({ state: 'visible', timeout: 30000 });
+
+  return resultCard.evaluate((card, placaConsultada) => {
+    const normalize = (value = '') => value.replace(/\s+/g, ' ').trim();
+    const cardText = normalize(card.innerText);
+    const tables = [...card.querySelectorAll('table')];
+
+    const rowsFromTable = (table) =>
+      [...table.querySelectorAll('tr')]
+        .map((row) =>
+          [...row.children]
+            .map((cell) => normalize(cell.innerText))
+            .filter(Boolean)
+        )
+        .filter((row) => row.length > 0);
+
+    const tableToObject = (table) => {
+      const rows = rowsFromTable(table);
+      if (rows.length < 2) return null;
+
+      const headers = rows[0];
+      const values = rows[1] || [];
+
+      return headers.reduce((acc, header, index) => {
+        acc[header] = values[index] || null;
+        return acc;
+      }, {});
+    };
+
+    const tableToPairs = (table) => {
+      const rows = rowsFromTable(table);
+
+      return rows.map((row) => ({
+        concepto: row[0] || null,
+        valor: row[row.length - 1] || null
+      }));
+    };
+
+    const tableToDetailRows = (table) => {
+      const rows = rowsFromTable(table);
+      if (rows.length < 2) return [];
+
+      const headers = rows[0];
+
+      return rows
+        .slice(1)
+        .filter((row) => row.length >= headers.length)
+        .filter((row) => !/^total:?$/i.test(row[0]))
+        .map((row) =>
+          headers.reduce((acc, header, index) => {
+            acc[header] = row[index] || null;
+            return acc;
+          }, {})
+        );
+    };
+
+    const matchGroup = (regex) => {
+      const match = cardText.match(regex);
+      return match?.[1] ? normalize(match[1]) : null;
+    };
+
+    const totalPagar =
+      matchGroup(/A pagar:\s*(USD\s*\$[0-9.,]+)/i) ||
+      matchGroup(/Total:\s*(USD\s*\$[0-9.,]+)/i);
+
+    return {
+      consulta: {
+        placa: placaConsultada,
+        ultimo_anio_pago: matchGroup(/Último año de pago\s+([0-9]{4})/i),
+        chasis: /Chasis\s+Ver chasis/i.test(cardText)
+          ? null
+          : matchGroup(/Chasis\s+([A-Z0-9-]+)/i)
+      },
+      vehiculo: tables[0] ? tableToObject(tables[0]) : null,
+      registro: tables[1] ? tableToObject(tables[1]) : null,
+      fechas: tables[2] ? tableToObject(tables[2]) : null,
+      resumen_valores: tables[3] ? tableToPairs(tables[3]) : [],
+      total_pagar: totalPagar,
+      detalle_valores: tables[4] ? tableToDetailRows(tables[4]) : []
+    };
+  }, placa);
+};
+
+const capturarBloqueResultados = async (page, filePath) => {
+  const resultCard = getResultCard(page);
+
+  if (await resultCard.count()) {
+    await resultCard.scrollIntoViewIfNeeded();
+    await ocultarOverlaysParaCaptura(page);
+
+    await resultCard.screenshot({ path: filePath });
+    return;
+  }
+
+  await page.screenshot({
+    path: filePath,
+    fullPage: true
+  });
+};
+
+module.exports = async ({ browser, placa, site, id_orden, output_key }) => {
   console.log(`🟢 Iniciando captura MATRÍCULA para placa ${placa}`);
 
   const context = await browser.newContext({
@@ -41,44 +203,49 @@ module.exports = async ({ browser, placa, site, id_orden }) => {
       return !document.body.innerText.toLowerCase().includes('consultando');
     }, { timeout: 120000 });
 
-    await page.waitForFunction(() => {
-      const t = document.body.innerText.toLowerCase();
-      return t.includes('el vehículo consultado');
-    }, { timeout: 120000 });
+    await getResultCard(page).waitFor({
+      state: 'visible',
+      timeout: 45000
+    });
+
+    await expandirDetalleValores(page);
 
   } catch (e) {
     console.warn(`⚠️ Error controlado en MATRÍCULA: ${e.message}`);
   }
 
+  const datos = await extraerDatosMatricula(page, placa).catch((error) => {
+    console.warn(`⚠️ No se pudo serializar JSON de MATRÍCULA: ${error.message}`);
+    return {
+      consulta: {
+        placa
+      },
+      vehiculo: null,
+      registro: null,
+      fechas: null,
+      resumen_valores: [],
+      total_pagar: null,
+      detalle_valores: []
+    };
+  });
+
   // ==========================
   // 📸 CAPTURA — NO SE TOCA NADA
   // ==========================
-  const dir = path.join(__dirname, `../screenshots/orden_${id_orden}`);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const { dir } = ensureScreenshotDir({
+    baseDir: __dirname,
+    placa,
+    id_orden,
+    output_key
+  });
 
   const filename = `${site.key}.png`;
   const filePath = path.join(dir, filename);
 
-  await page.evaluate(() => {
-    window.scrollTo({
-      top: document.body.scrollHeight * 0.18,
-      behavior: 'instant'
-    });
-  });
+  await capturarBloqueResultados(page, filePath);
 
-  await page.waitForTimeout(1500);
-
-  const viewport = page.viewportSize();
-
-  await page.screenshot({
-    path: filePath,
-    clip: {
-      x: 0,
-      y: Math.floor(viewport.height * 0.02),
-      width: viewport.width,
-      height: Math.floor(viewport.height * 0.99)
-    }
-  });
+  console.log('📦 MATRÍCULA JSON');
+  console.log(JSON.stringify(datos, null, 2));
 
   await context.close();
 
@@ -90,6 +257,7 @@ module.exports = async ({ browser, placa, site, id_orden }) => {
   return {
     fuente: site.key,                                   // antes: site
     filename,                                           // antes: archivo (con path)
-    descripcion: `Captura automática del sitio ${site.key}`
+    descripcion: `Captura automática del sitio ${site.key}`,
+    datos
   };
 };
